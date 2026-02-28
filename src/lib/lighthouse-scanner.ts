@@ -1,0 +1,1 @@
+export { runLighthouseAccessibility } from '@/core'
