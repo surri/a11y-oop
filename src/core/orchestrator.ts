@@ -26,7 +26,7 @@ export async function runScan(
   callbacks?.onStep?.('analyzing')
   callbacks?.onProgress?.('Analyzing with Gemini AI...')
 
-  const { issues, score, summary } = await analyzeAccessibility(
+  const { issues, score: aiScore, summary } = await analyzeAccessibility(
     geminiApiKey,
     screenshot,
     JSON.stringify(axeViolations, null, 2),
@@ -37,18 +37,22 @@ export async function runScan(
       vertexConfig: config.vertexConfig,
       enableGrounding: config.enableGrounding,
       enableCaching: config.enableCaching,
-    }
+    },
+    'runtime+code'
   )
 
   return {
     url,
+    mode: 'runtime+code',
     timestamp: new Date().toISOString(),
     screenshot,
-    score,
+    score: lighthouseScore ?? aiScore,
     lighthouseScore,
     summary,
     issues,
-    axeViolationCount: axeViolations.length
+    axeViolationCount: axeViolations.length,
+    lighthouseFindings: [],
+    lighthouseReport: null,
   }
 }
 
@@ -97,10 +101,10 @@ export async function runFullPipeline(
   const scan = await runScan(config, callbacks)
 
   const patches: FixPatch[] = scan.issues.map((issue) => ({
-    filePath: issue.filePath,
-    original: issue.currentCode,
-    replacement: issue.fixedCode,
-  }))
+    filePath: issue.filePath ?? '',
+    original: issue.currentCode ?? '',
+    replacement: issue.fixedCode ?? '',
+  })).filter((patch) => patch.filePath && patch.original && patch.replacement)
 
   const fix = await runFix(patchConfig, patches, callbacks)
 

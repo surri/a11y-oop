@@ -1,13 +1,16 @@
 export interface A11yIssue {
   id: string
   component: string
-  filePath: string
+  filePath?: string
   severity: 'critical' | 'serious' | 'moderate' | 'minor'
-  wcagCriteria: string
+  wcagCriteria?: string
   description: string
-  currentCode: string
-  fixedCode: string
-  line: number
+  currentCode?: string
+  fixedCode?: string
+  line?: number
+  selector?: string
+  htmlSnippet?: string
+  sourceReady?: boolean
   boundingBox?: {
     x: number
     y: number
@@ -16,8 +19,17 @@ export interface A11yIssue {
   }
 }
 
+export interface LighthouseFinding {
+  id: string
+  score: number | null
+  title: string
+  description?: string
+  displayValue?: string
+}
+
 export interface ScanResult {
   url: string
+  mode: 'runtime-dom' | 'runtime+code' | 'code-only'
   timestamp: string
   screenshot: string
   score: number
@@ -25,6 +37,8 @@ export interface ScanResult {
   summary: string
   issues: A11yIssue[]
   axeViolationCount: number
+  lighthouseFindings: LighthouseFinding[]
+  lighthouseReport: string | null
 }
 
 export interface FixPatch {
@@ -78,9 +92,18 @@ export type ScanStep =
 export interface GitHubRepoConfig {
   owner: string
   repo: string
-  branch: string
-  srcPath: string
+  branch?: string
+  srcPath?: string
   filePattern?: string
+}
+
+export interface GitHubResolvedConfig {
+  owner: string
+  repo: string
+  branch: string
+  srcPath?: string
+  filePattern: string
+  resolutionMode: 'explicit' | 'heuristic' | 'fallback-root'
 }
 
 export interface LocalSourceConfig {

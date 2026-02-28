@@ -2,6 +2,7 @@ import { VertexAI, SchemaType } from '@google-cloud/vertexai'
 import { GoogleAuth } from 'google-auth-library'
 import type { A11yIssue } from '@/shared/types'
 import { getOrCreateCache } from './cache-manager'
+import type { AccessibilityAnalysisMode } from './gemini-analyzer'
 
 const responseSchema = {
   type: SchemaType.OBJECT,
@@ -53,22 +54,36 @@ const responseSchema = {
   required: ['issues', 'score', 'summary']
 }
 
-const SYSTEM_INSTRUCTION = `You are an expert web accessibility auditor. Analyze the provided screenshot and axe-core scan results to identify WCAG 2.1 violations.
+const WCAG_REFERENCE_URL = 'https://www.w3.org/TR/WCAG/'
+const WCAG_STANDARDS_URL = 'https://www.w3.org/WAI/standards-guidelines/wcag/'
 
-Cross-reference the axe results with the source code files to pinpoint exact locations and provide concrete fixes.
+function buildSystemInstruction(mode: AccessibilityAnalysisMode): string {
+  const dataContext = mode === 'runtime+code'
+    ? 'Analyze the provided screenshot and runtime accessibility findings (for example Lighthouse accessibility audits) to identify violations against the latest published WCAG Recommendation.'
+    : 'Analyze the provided source code to identify likely violations against the latest published WCAG Recommendation.'
+
+  return `You are an expert web accessibility auditor. ${dataContext}
+
+Cross-reference the runtime accessibility findings with the source code files to pinpoint exact locations and provide concrete fixes.
+
+Normative WCAG reference policy:
+- Treat the latest W3C WCAG Recommendation as the source of truth (currently WCAG 2.2 unless superseded).
+- Prefer official W3C sources for criterion names and intent: ${WCAG_REFERENCE_URL} and ${WCAG_STANDARDS_URL}
+- If web grounding/search is available, verify criterion titles against those W3C sources before finalizing.
 
 For each issue found:
 1. Identify the affected React component and file path
 2. Provide the exact current code snippet that is problematic
 3. Provide a corrected code snippet that fixes the issue
-4. Map to the specific WCAG 2.1 success criterion (e.g., "1.1.1 Non-text Content")
+4. Map to the specific WCAG success criterion from the latest published WCAG Recommendation (e.g., "1.1.1 Non-text Content")
 5. Assign severity: critical (WCAG A blocker), serious (WCAG A/AA), moderate (usability impact), minor (best practice)
 6. Estimate the line number in the source file
 7. If visible in the screenshot, provide the bounding box coordinates of the element
 
 CRITICAL RULES:
+- Use official W3C WCAG sources as normative references. Do not rely on third-party summaries when criterion wording conflicts.
 - ONLY reference files listed in AVAILABLE SOURCE FILES above. NEVER invent file paths or component names that do not exist in the provided source code.
-- If an axe-core violation cannot be mapped to any provided source file, SKIP that violation entirely. Do NOT guess or fabricate component names.
+- If a runtime accessibility finding cannot be mapped to any provided source file, SKIP that finding entirely. Do NOT guess or fabricate component names.
 - The "component" field must be a component name that actually appears in the provided source code.
 - The "filePath" must exactly match one of the AVAILABLE SOURCE FILES listed above.
 - The currentCode must be an exact substring of the source file (preserve whitespace and indentation exactly).
@@ -87,11 +102,13 @@ Example - CORRECT (full element replacement):
 
 Provide an overall accessibility score from 0-100 (100 = fully accessible) and a brief summary of the findings.
 
-Be thorough but focus on real, actionable issues that can be mapped to the provided source code. If there are violations visible in the screenshot or axe results that cannot be traced to any provided source file, mention them in the summary but do NOT create issue entries for them.`
+Be thorough but focus on real, actionable issues that can be mapped to the provided source code. If there are findings visible in the screenshot or runtime findings that cannot be traced to any provided source file, mention them in the summary but do NOT create issue entries for them.`
+}
 
 function buildUserPrompt(
   axeResults: string,
-  sourceFiles: Record<string, string>
+  sourceFiles: Record<string, string>,
+  mode: AccessibilityAnalysisMode
 ): string {
   const sourceFilesText = Object.entries(sourceFiles)
     .map(([filePath, content]) => `--- File: ${filePath} ---\n${content}`)
@@ -99,8 +116,12 @@ function buildUserPrompt(
 
   const availableFiles = Object.keys(sourceFiles)
 
-  return `Axe-core scan results:
-${axeResults}
+  const axeBlock = mode === 'runtime+code'
+    ? `Runtime accessibility findings:
+${axeResults}`
+    : 'Runtime accessibility findings: Not available (code-only mode)'
+
+  return `${axeBlock}
 
 Source code files:
 ${sourceFilesText}
@@ -121,6 +142,7 @@ async function generateWithCache(
   cachedContentName: string,
   userPrompt: string,
   screenshot: string,
+  mode: AccessibilityAnalysisMode,
   enableGrounding: boolean
 ): Promise<{ text: string; groundingMetadata?: unknown }> {
   const auth = new GoogleAuth({
@@ -131,14 +153,21 @@ async function generateWithCache(
 
   const url = `https://${location}-aiplatform.googleapis.com/v1beta1/projects/${project}/locations/${location}/publishers/google/models/gemini-2.5-flash:generateContent`
 
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+    { text: userPrompt }
+  ]
+  if (mode === 'runtime+code') {
+    if (!screenshot) {
+      throw new Error('screenshot is required in runtime+code mode')
+    }
+    parts.push({ inlineData: { mimeType: 'image/png', data: screenshot } })
+  }
+
   const requestBody: Record<string, unknown> = {
     cachedContent: cachedContentName,
     contents: [{
       role: 'user',
-      parts: [
-        { text: userPrompt },
-        { inlineData: { mimeType: 'image/png', data: screenshot } }
-      ]
+      parts
     }],
     generationConfig: {
       responseMimeType: 'application/json',
@@ -169,8 +198,10 @@ async function generateWithCache(
 
 async function generateWithSDK(
   config: VertexAnalyzerConfig,
+  systemInstruction: string,
   userPrompt: string,
   screenshot: string,
+  mode: AccessibilityAnalysisMode,
   enableGrounding: boolean
 ): Promise<{ text: string; groundingMetadata?: unknown }> {
   const { project, location } = config
@@ -182,7 +213,7 @@ async function generateWithSDK(
 
   const model = vertexAI.getGenerativeModel({
     model: 'gemini-2.5-flash',
-    systemInstruction: { role: 'user', parts: [{ text: SYSTEM_INSTRUCTION }] },
+    systemInstruction: { role: 'user', parts: [{ text: systemInstruction }] },
     ...(tools ? { tools } : {}),
     generationConfig: {
       responseMimeType: 'application/json',
@@ -191,13 +222,20 @@ async function generateWithSDK(
     },
   })
 
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+    { text: userPrompt }
+  ]
+  if (mode === 'runtime+code') {
+    if (!screenshot) {
+      throw new Error('screenshot is required in runtime+code mode')
+    }
+    parts.push({ inlineData: { mimeType: 'image/png', data: screenshot } })
+  }
+
   const result = await model.generateContent({
     contents: [{
       role: 'user',
-      parts: [
-        { text: userPrompt },
-        { inlineData: { mimeType: 'image/png', data: screenshot } }
-      ]
+      parts
     }]
   })
 
@@ -217,10 +255,12 @@ export async function analyzeWithVertex(
   screenshot: string,
   axeResults: string,
   sourceFiles: Record<string, string>,
-  config: VertexAnalyzerConfig
+  config: VertexAnalyzerConfig,
+  mode: AccessibilityAnalysisMode = 'runtime+code'
 ): Promise<{ issues: A11yIssue[]; score: number; summary: string; groundingMetadata?: unknown }> {
   const { project, location, enableGrounding = true, enableCaching = true } = config
-  const userPrompt = buildUserPrompt(axeResults, sourceFiles)
+  const systemInstruction = buildSystemInstruction(mode)
+  const userPrompt = buildUserPrompt(axeResults, sourceFiles, mode)
   const availableFiles = Object.keys(sourceFiles)
 
   let response: { text: string; groundingMetadata?: unknown }
@@ -229,7 +269,7 @@ export async function analyzeWithVertex(
     const cachedContentName = await getOrCreateCache(
       project,
       location,
-      SYSTEM_INSTRUCTION
+      systemInstruction
     )
 
     if (cachedContentName) {
@@ -238,13 +278,14 @@ export async function analyzeWithVertex(
         cachedContentName,
         userPrompt,
         screenshot,
+        mode,
         enableGrounding
       )
     } else {
-      response = await generateWithSDK(config, userPrompt, screenshot, enableGrounding)
+      response = await generateWithSDK(config, systemInstruction, userPrompt, screenshot, mode, enableGrounding)
     }
   } else {
-    response = await generateWithSDK(config, userPrompt, screenshot, enableGrounding)
+    response = await generateWithSDK(config, systemInstruction, userPrompt, screenshot, mode, enableGrounding)
   }
 
   const parsed = JSON.parse(response.text) as {
@@ -254,11 +295,11 @@ export async function analyzeWithVertex(
   }
 
   const validatedIssues = parsed.issues.filter((issue) => {
-    if (!availableFiles.includes(issue.filePath)) {
+    if (!issue.filePath || !availableFiles.includes(issue.filePath)) {
       return false
     }
     const fileContent = sourceFiles[issue.filePath]
-    if (fileContent && !fileContent.includes(issue.currentCode)) {
+    if (issue.currentCode && fileContent && !fileContent.includes(issue.currentCode)) {
       return false
     }
     return true

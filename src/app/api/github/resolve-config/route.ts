@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/lib/auth'
-import { validateRepoAccess } from '@/lib/github-client'
+import { resolveRepoConfig } from '@/lib/github-client'
+import type { GitHubRepoConfig } from '@/shared/types'
 
 export async function POST(request: Request) {
   try {
@@ -13,18 +14,18 @@ export async function POST(request: Request) {
       )
     }
 
-    const body = await request.json() as { owner: string; repo: string }
+    const body = await request.json() as GitHubRepoConfig
     const { owner, repo } = body
 
     if (!owner || !repo) {
       return NextResponse.json({ error: 'owner and repo are required' }, { status: 400 })
     }
 
-    const result = await validateRepoAccess(owner, repo, token)
-    return NextResponse.json(result)
+    const resolved = await resolveRepoConfig(body, token)
+    return NextResponse.json(resolved)
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Unknown error' },
+      { error: error instanceof Error ? error.message : 'Failed to resolve repository config' },
       { status: 500 }
     )
   }

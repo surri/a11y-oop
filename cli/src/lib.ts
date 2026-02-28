@@ -4,6 +4,7 @@ export {
   readSourceFiles,
   analyzeAccessibility,
   runLighthouseAccessibility,
+  runLighthouseAccessibilityDetailed,
   applyPatches,
   fixOrphanedClosingTags,
   runScan,

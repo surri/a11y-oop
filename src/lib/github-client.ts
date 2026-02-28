@@ -3,8 +3,9 @@ import {
   readRepoFiles as coreReadRepoFiles,
   createFixPR as coreCreateFixPR,
   validateRepoAccess as coreValidateRepoAccess,
+  resolveRepoConfig as coreResolveRepoConfig,
 } from '@/core'
-import type { GitHubRepoConfig, FixPatch, GitHubPrResult } from '@/shared/types'
+import type { GitHubRepoConfig, GitHubResolvedConfig, FixPatch, GitHubPrResult } from '@/shared/types'
 
 function getOctokit(token?: string) {
   const resolved = token ?? process.env.GITHUB_TOKEN
@@ -16,6 +17,10 @@ function getOctokit(token?: string) {
 
 export async function readRepoFiles(config: GitHubRepoConfig, token?: string): Promise<Record<string, string>> {
   return coreReadRepoFiles(getOctokit(token), config)
+}
+
+export async function resolveRepoConfig(config: GitHubRepoConfig, token?: string): Promise<GitHubResolvedConfig> {
+  return coreResolveRepoConfig(getOctokit(token), config)
 }
 
 export async function createFixPR(config: GitHubRepoConfig, patches: FixPatch[], token?: string): Promise<GitHubPrResult> {

@@ -1,16 +1,11 @@
-import type { ScanConfig, PatchConfig, PipelineCallbacks } from '../../../src/core'
-import type { FixPatch, GitHubRepoConfig, GitHubPrResult } from '../../../src/shared/types'
+import type { PatchConfig, PipelineCallbacks } from '../../../src/core'
+import type { A11yIssue, FixPatch, RescanResult, ScanResult } from '../../../src/shared/types'
 import {
-  runScan,
-  runFix,
-  runRescan,
   captureScreenshot,
-  runAxeScan,
+  runLighthouseAccessibilityDetailed,
+  readSourceFiles,
   analyzeAccessibility,
-  runLighthouseAccessibility,
-  createOctokit,
-  readRepoFiles,
-  createFixPR,
+  runFix,
 } from '../../../src/core'
 import { createSpinner } from '../output/spinner.js'
 import {
@@ -22,15 +17,12 @@ import {
 
 export interface RunOptions {
   url: string
-  src?: string
+  src: string
   apiKey: string
   glob: string
   scanOnly: boolean
   rescan: boolean
   json: boolean
-  github?: string
-  branch: string
-  srcPath: string
   provider?: 'genai' | 'vertex'
   project?: string
   location?: string
@@ -38,17 +30,49 @@ export interface RunOptions {
   caching?: boolean
 }
 
-function parseGitHubOption(github: string): { owner: string; repo: string } {
-  const parts = github.split('/')
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw new Error('Invalid --github format. Expected owner/repo (e.g. facebook/react)')
+function toSeverity(score: number | null): A11yIssue['severity'] {
+  if (score === null) return 'moderate'
+  if (score <= 0) return 'serious'
+  if (score < 0.5) return 'moderate'
+  return 'minor'
+}
+
+function buildRuntimeScanResult(
+  url: string,
+  screenshot: string,
+  lighthouse: Awaited<ReturnType<typeof runLighthouseAccessibilityDetailed>>
+): ScanResult {
+  const issues: A11yIssue[] = lighthouse.audits.map((audit, idx) => ({
+    id: `${audit.id}-${idx}`,
+    component: audit.id,
+    severity: toSeverity(audit.score),
+    wcagCriteria: audit.id,
+    description: `${audit.title}${audit.description ? ` - ${audit.description}` : ''}`,
+    currentCode: audit.displayValue,
+    sourceReady: false,
+  }))
+
+  const score = lighthouse.score ?? Math.max(0, 100 - issues.length * 7)
+  const summary = issues.length === 0
+    ? 'Lighthouse did not report accessibility findings.'
+    : `Lighthouse reported ${issues.length} accessibility finding${issues.length !== 1 ? 's' : ''}.`
+
+  return {
+    url,
+    mode: 'runtime-dom',
+    timestamp: new Date().toISOString(),
+    screenshot,
+    score,
+    lighthouseScore: lighthouse.score,
+    summary,
+    issues,
+    axeViolationCount: issues.length,
+    lighthouseFindings: lighthouse.audits,
+    lighthouseReport: lighthouse.report,
   }
-  return { owner: parts[0], repo: parts[1] }
 }
 
 export async function runScanFixRescan(options: RunOptions): Promise<void> {
-  const isGitHubMode = Boolean(options.github)
-
   const spinner = createSpinner('Scanning...')
 
   const callbacks: PipelineCallbacks = {
@@ -63,36 +87,28 @@ export async function runScanFixRescan(options: RunOptions): Promise<void> {
     },
   }
 
-  // --- SCAN ---
-  if (!options.json) spinner.start('Scanning for accessibility issues...')
+  if (!options.json) spinner.start('Running Lighthouse scan...')
 
-  let scanResult
+  let scanResult: ScanResult
+  let sourceMappedIssues: A11yIssue[] = []
+
   try {
-    if (isGitHubMode) {
-      const { owner, repo } = parseGitHubOption(options.github!)
-      const githubToken = process.env['GITHUB_TOKEN']!
-      const octokit = createOctokit(githubToken)
-      const ghConfig: GitHubRepoConfig = {
-        owner,
-        repo,
-        branch: options.branch,
-        srcPath: options.srcPath,
-        filePattern: options.glob,
-      }
+    const [screenshot, lighthouse] = await Promise.all([
+      captureScreenshot(options.url),
+      runLighthouseAccessibilityDetailed(options.url),
+    ])
 
-      if (!options.json) spinner.text = 'Reading source files from GitHub...'
-      const [screenshot, axeViolations, sourceFiles, lighthouseScore] = await Promise.all([
-        captureScreenshot(options.url),
-        runAxeScan(options.url),
-        readRepoFiles(octokit, ghConfig),
-        runLighthouseAccessibility(options.url),
-      ])
+    scanResult = buildRuntimeScanResult(options.url, screenshot, lighthouse)
 
-      if (!options.json) spinner.text = `Analyzing with ${options.provider === 'vertex' ? 'Vertex AI' : 'Gemini AI'}...`
-      const { issues, score, summary } = await analyzeAccessibility(
+    if (!options.scanOnly) {
+      if (!options.json) spinner.text = 'Reading local source files...'
+      const sourceFiles = await readSourceFiles(options.src, options.glob)
+
+      if (!options.json) spinner.text = `Generating source-mapped fixes with ${options.provider === 'vertex' ? 'Vertex AI' : 'Gemini'}...`
+      const analysis = await analyzeAccessibility(
         options.apiKey,
         screenshot,
-        JSON.stringify(axeViolations, null, 2),
+        `Lighthouse accessibility findings:\n${scanResult.lighthouseReport ?? ''}`,
         sourceFiles,
         undefined,
         {
@@ -100,31 +116,10 @@ export async function runScanFixRescan(options: RunOptions): Promise<void> {
           vertexConfig: options.project ? { project: options.project, location: options.location ?? 'us-central1' } : undefined,
           enableGrounding: options.grounding,
           enableCaching: options.caching,
-        }
+        },
+        'runtime+code'
       )
-
-      scanResult = {
-        url: options.url,
-        timestamp: new Date().toISOString(),
-        screenshot,
-        score,
-        lighthouseScore,
-        summary,
-        issues,
-        axeViolationCount: axeViolations.length,
-      }
-    } else {
-      const scanConfig: ScanConfig = {
-        url: options.url,
-        srcDir: options.src!,
-        fileGlob: options.glob,
-        geminiApiKey: options.apiKey,
-        provider: options.provider,
-        vertexConfig: options.project ? { project: options.project, location: options.location ?? 'us-central1' } : undefined,
-        enableGrounding: options.grounding,
-        enableCaching: options.caching,
-      }
-      scanResult = await runScan(scanConfig, callbacks)
+      sourceMappedIssues = analysis.issues
     }
   } catch (error) {
     if (!options.json) spinner.fail('Scan failed')
@@ -143,73 +138,55 @@ export async function runScanFixRescan(options: RunOptions): Promise<void> {
     return
   }
 
-  // --- FIX ---
-  const patches: FixPatch[] = scanResult.issues.map((issue) => ({
-    filePath: issue.filePath,
-    original: issue.currentCode,
-    replacement: issue.fixedCode,
-  }))
+  const patches: FixPatch[] = sourceMappedIssues
+    .filter((issue) => issue.filePath && issue.currentCode && issue.fixedCode)
+    .map((issue) => ({
+      filePath: issue.filePath!,
+      original: issue.currentCode!,
+      replacement: issue.fixedCode!,
+    }))
 
   let fixResult
-  let prResult: GitHubPrResult | undefined
-
-  if (isGitHubMode) {
-    const { owner, repo } = parseGitHubOption(options.github!)
-    const githubToken = process.env['GITHUB_TOKEN']!
-    const octokit = createOctokit(githubToken)
-    const ghConfig: GitHubRepoConfig = {
-      owner,
-      repo,
-      branch: options.branch,
-      srcPath: options.srcPath,
-    }
-
-    if (!options.json) spinner.start('Creating pull request with fixes...')
-    try {
-      prResult = await createFixPR(octokit, ghConfig, patches)
-      fixResult = { applied: prResult.filesChanged, failed: 0, errors: [] as string[] }
-    } catch (error) {
-      if (!options.json) spinner.fail('PR creation failed')
-      throw error
-    }
-    if (!options.json) spinner.succeed(`PR created: ${prResult.prUrl}`)
-  } else {
-    const patchConfig: PatchConfig = { srcDir: options.src! }
-    if (!options.json) spinner.start(`Applying ${patches.length} fix patches...`)
-    try {
+  if (!options.json) spinner.start(`Applying ${patches.length} patches to ${options.src}...`)
+  try {
+    if (patches.length === 0) {
+      fixResult = { applied: 0, failed: 0, errors: ['No source-mapped fixes were generated from Lighthouse findings.'] }
+    } else {
+      const patchConfig: PatchConfig = { srcDir: options.src }
       fixResult = await runFix(patchConfig, patches, callbacks)
-    } catch (error) {
-      if (!options.json) spinner.fail('Fix failed')
-      throw error
     }
-    if (!options.json) spinner.succeed('Fixes applied')
+  } catch (error) {
+    if (!options.json) spinner.fail('Fix failed')
+    throw error
   }
+  if (!options.json) spinner.succeed('Fix step complete')
 
-  // --- RESCAN (local mode only) ---
-  let rescanResult
-  if (options.rescan && !isGitHubMode) {
-    const scanConfig: ScanConfig = {
-      url: options.url,
-      srcDir: options.src!,
-      fileGlob: options.glob,
-      geminiApiKey: options.apiKey,
-      provider: options.provider,
-      vertexConfig: options.project ? { project: options.project, location: options.location ?? 'us-central1' } : undefined,
-      enableGrounding: options.grounding,
-      enableCaching: options.caching,
-    }
-    if (!options.json) spinner.start('Rescanning after fixes...')
+  let rescanResult: RescanResult | undefined
+  if (options.rescan) {
+    if (!options.json) spinner.start('Running Lighthouse rescan...')
     try {
-      rescanResult = await runRescan(
-        scanConfig,
-        {
+      const [afterScreenshot, afterLighthouse] = await Promise.all([
+        captureScreenshot(options.url),
+        runLighthouseAccessibilityDetailed(options.url),
+      ])
+
+      const afterScore = afterLighthouse.score ?? scanResult.score
+      const afterIssueCount = afterLighthouse.audits.length
+
+      rescanResult = {
+        before: {
           screenshot: scanResult.screenshot,
           score: scanResult.score,
           lighthouseScore: scanResult.lighthouseScore,
-          issueCount: scanResult.issues.length,
         },
-        callbacks
-      )
+        after: {
+          screenshot: afterScreenshot,
+          score: afterScore,
+          lighthouseScore: afterLighthouse.score,
+        },
+        issuesFixed: Math.max(0, scanResult.issues.length - afterIssueCount),
+        issuesRemaining: afterIssueCount,
+      }
     } catch (error) {
       if (!options.json) spinner.fail('Rescan failed')
       throw error
@@ -217,27 +194,18 @@ export async function runScanFixRescan(options: RunOptions): Promise<void> {
     if (!options.json) spinner.succeed('Rescan complete')
   }
 
-  // --- OUTPUT ---
   if (options.json) {
-    const output: Record<string, unknown> = { scan: scanResult, fix: fixResult }
-    if (prResult) output['pr'] = prResult
+    const output: Record<string, unknown> = { scan: scanResult, fix: fixResult, mappedIssueCount: sourceMappedIssues.length }
     if (rescanResult) output['rescan'] = rescanResult
     process.stdout.write(JSON.stringify(output, null, 2) + '\n')
   } else {
     process.stdout.write(formatScanResult(scanResult) + '\n')
     process.stdout.write(formatIssues(scanResult.issues) + '\n')
+    process.stdout.write('\n')
+    process.stdout.write(`Source-mapped issues: ${sourceMappedIssues.length}\n`)
     process.stdout.write(formatFixResult(fixResult) + '\n')
-    if (prResult) {
-      process.stdout.write('\n')
-      process.stdout.write(`  PR #${prResult.prNumber}: ${prResult.prUrl}\n`)
-      process.stdout.write(`  Branch: ${prResult.branchName}\n`)
-      process.stdout.write(`  Files changed: ${prResult.filesChanged}\n`)
-    }
     if (rescanResult) {
       process.stdout.write(formatRescanResult(rescanResult) + '\n')
-    }
-    if (isGitHubMode) {
-      process.stdout.write('\n  (Rescan skipped in GitHub mode - changes are in the PR)\n')
     }
   }
 }

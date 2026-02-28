@@ -11,6 +11,7 @@ import FixButton from '@/components/FixButton'
 import BeforeAfter from '@/components/BeforeAfter'
 import PrResult from '@/components/PrResult'
 import UserMenu from '@/components/UserMenu'
+import SourceModeSelector from '@/components/SourceModeSelector'
 
 export default function HomePage() {
   const [url, setUrl] = useState('')
@@ -22,17 +23,28 @@ export default function HomePage() {
   const [githubConfig, setGitHubConfig] = useState<GitHubRepoConfig>({
     owner: '',
     repo: '',
-    branch: 'main',
-    srcPath: 'src',
+    branch: undefined,
+    srcPath: undefined,
+    filePattern: undefined,
   })
   const [localConfig, setLocalConfig] = useState<LocalSourceConfig>({
-    srcPath: '~/hackerthon/a11y-oop-demo/src',
+    srcPath: '',
   })
   const [scanError, setScanError] = useState<string | null>(null)
   const [fixPrResult, setFixPrResult] = useState<GitHubPrResult | null>(null)
+  const [showFixSourceConfig, setShowFixSourceConfig] = useState(false)
+  const [fixConfigError, setFixConfigError] = useState<string | null>(null)
+
+  const isSourceConfigured = () =>
+    sourceMode === 'github'
+      ? Boolean(githubConfig.owner && githubConfig.repo)
+      : Boolean(localConfig.srcPath.trim())
 
   const handleScan = async (targetUrl: string) => {
-    setUrl(targetUrl)
+    const runtimeUrl = targetUrl.trim()
+    if (!runtimeUrl) return
+
+    setUrl(runtimeUrl)
     setScanResult(null)
     setRescanResult(null)
     setFixPrResult(null)
@@ -40,7 +52,7 @@ export default function HomePage() {
     setScanStep('capturing')
 
     try {
-      const steps: ScanStep[] = ['capturing', 'scanning', 'reading', 'analyzing']
+      const steps: ScanStep[] = ['capturing', 'scanning', 'analyzing']
       let stepIdx = 0
 
       const stepTimer = setInterval(() => {
@@ -53,12 +65,7 @@ export default function HomePage() {
       const res = await fetch('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: targetUrl,
-          sourceMode,
-          github: sourceMode === 'github' ? githubConfig : undefined,
-          local: sourceMode === 'local' ? localConfig : undefined,
-        }),
+        body: JSON.stringify({ url: runtimeUrl }),
       })
 
       clearInterval(stepTimer)
@@ -79,35 +86,49 @@ export default function HomePage() {
     }
   }
 
-  const handleFix = async () => {
+  const runFixWithCurrentSource = async () => {
     if (!scanResult) return
     setIsFixing(true)
+    setFixConfigError(null)
     const currentSourceMode: SourceMode = sourceMode
 
     try {
-      const patches = scanResult.issues.map((issue) => ({
-        filePath: issue.filePath,
-        original: issue.currentCode,
-        replacement: issue.fixedCode,
-      }))
-
       const fixRes = await fetch('/api/fix', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          patches,
           sourceMode: currentSourceMode,
           github: currentSourceMode === 'github' ? githubConfig : undefined,
           local: currentSourceMode === 'local' ? localConfig : undefined,
+          scanContext: {
+            screenshot: scanResult.screenshot,
+            lighthouseReport: scanResult.lighthouseReport,
+          },
         }),
       })
 
+      if (!fixRes.ok) {
+        const body = await fixRes.json().catch(() => null)
+        if (fixRes.status === 400 || fixRes.status === 401) {
+          setShowFixSourceConfig(true)
+        }
+        throw new Error(body?.error ?? fixRes.statusText)
+      }
+
+      const fixData = await fixRes.json()
+
       if (currentSourceMode === 'github') {
-        if (fixRes.ok) {
-          const fixData = await fixRes.json()
-          if (fixData.pr) {
-            setFixPrResult(fixData.pr)
-          }
+        if (fixData.pr) {
+          setFixPrResult(fixData.pr)
+        } else if (fixData.errors?.length) {
+          setFixConfigError(String(fixData.errors[0]))
+        }
+        return
+      }
+
+      if (!url.trim() || fixData.applied === 0) {
+        if (fixData.errors?.length) {
+          setFixConfigError(String(fixData.errors[0]))
         }
         return
       }
@@ -133,10 +154,19 @@ export default function HomePage() {
       const rescan: RescanResult = await rescanRes.json()
       setRescanResult(rescan)
     } catch (error) {
-      console.error('Fix error:', error)
+      setFixConfigError(error instanceof Error ? error.message : String(error))
     } finally {
       setIsFixing(false)
     }
+  }
+
+  const handleFix = async () => {
+    if (!scanResult) return
+    if (!isSourceConfigured()) {
+      setShowFixSourceConfig(true)
+      return
+    }
+    await runFixWithCurrentSource()
   }
 
   const isScanning = scanStep !== 'idle' && scanStep !== 'complete' && scanStep !== 'error'
@@ -167,6 +197,7 @@ export default function HomePage() {
                 setScanResult(null)
                 setRescanResult(null)
                 setFixPrResult(null)
+                setFixConfigError(null)
                 setUrl('')
               }}
               className="text-xs text-gray-400 hover:text-gray-200 transition-colors border border-gray-700 hover:border-gray-500 rounded-lg px-3 py-1.5"
@@ -181,10 +212,10 @@ export default function HomePage() {
         {scanStep === 'idle' && (
           <div className="text-center mb-10">
             <h2 className="text-4xl font-extrabold bg-gradient-to-r from-violet-400 via-indigo-400 to-cyan-400 bg-clip-text text-transparent mb-3">
-              Fix accessibility issues automatically
+              Lighthouse-first accessibility analysis
             </h2>
             <p className="text-gray-400 text-lg max-w-xl mx-auto">
-              Scan any URL to detect WCAG violations, then apply AI-generated fixes with one click.
+              Scan URL first. Connect repository/local source only when generating fixes.
             </p>
           </div>
         )}
@@ -193,12 +224,6 @@ export default function HomePage() {
           <ScanForm
             onScan={handleScan}
             isScanning={false}
-            sourceMode={sourceMode}
-            onSourceModeChange={setSourceMode}
-            githubConfig={githubConfig}
-            onGitHubConfigChange={setGitHubConfig}
-            localConfig={localConfig}
-            onLocalConfigChange={setLocalConfig}
           />
         )}
 
@@ -215,9 +240,7 @@ export default function HomePage() {
                   ? `대상 URL에 연결할 수 없습니다. 웹 서버가 실행 중인지 확인해 주세요.`
                   : scanError.includes('ENOTFOUND')
                     ? `대상 URL을 찾을 수 없습니다. 주소를 다시 확인해 주세요.`
-                    : scanError.includes('ENOENT') || scanError.includes('no such file')
-                      ? `소스 경로를 찾을 수 없습니다. 경로가 올바른지 확인해 주세요.`
-                      : scanError}
+                    : scanError}
               </div>
             )}
             <button
@@ -239,12 +262,22 @@ export default function HomePage() {
                   {scanResult.issues.length} issue{scanResult.issues.length !== 1 ? 's' : ''} found
                 </h2>
                 <p className="text-gray-400 text-sm mb-2">{scanResult.summary}</p>
-                <p className="text-xs text-gray-600 font-mono">{scanResult.url}</p>
+                <p className="text-xs text-gray-500 mb-1">
+                  Mode: {scanResult.mode === 'runtime-dom' ? 'Runtime + Lighthouse' : scanResult.mode}
+                </p>
+                {scanResult.url && (
+                  <p className="text-xs text-gray-600 font-mono">{scanResult.url}</p>
+                )}
               </div>
             </div>
 
             <ScreenshotViewer screenshot={scanResult.screenshot} issues={scanResult.issues} />
             <IssueList issues={scanResult.issues} />
+            {fixConfigError && (
+              <div className="text-sm text-amber-300 bg-amber-950/40 border border-amber-900/40 rounded-lg px-4 py-3">
+                {fixConfigError}
+              </div>
+            )}
             <FixButton
               issueCount={scanResult.issues.length}
               onFix={handleFix}
@@ -268,6 +301,56 @@ export default function HomePage() {
           />
         )}
       </main>
+
+      {showFixSourceConfig && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center px-4">
+          <div className="w-full max-w-xl bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+            <h3 className="text-lg font-semibold text-gray-100 mb-2">Connect Source for Fix</h3>
+            <p className="text-sm text-gray-400 mb-5">
+              Select GitHub repository or local source path. Gemini will generate patches using Lighthouse findings and this source.
+            </p>
+
+            <SourceModeSelector
+              sourceMode={sourceMode}
+              onSourceModeChange={setSourceMode}
+              githubConfig={githubConfig}
+              onGitHubConfigChange={setGitHubConfig}
+              localConfig={localConfig}
+              onLocalConfigChange={setLocalConfig}
+              disabled={isFixing}
+            />
+
+            {fixConfigError && (
+              <p className="mt-4 text-xs text-amber-300">{fixConfigError}</p>
+            )}
+
+            <div className="mt-6 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowFixSourceConfig(false)}
+                className="text-sm text-gray-400 hover:text-gray-200 border border-gray-700 rounded-lg px-4 py-2 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isFixing}
+                onClick={async () => {
+                  if (!isSourceConfigured()) {
+                    setFixConfigError('Select GitHub repository or local source path first.')
+                    return
+                  }
+                  setShowFixSourceConfig(false)
+                  await runFixWithCurrentSource()
+                }}
+                className="text-sm text-white bg-violet-600 hover:bg-violet-500 rounded-lg px-4 py-2 transition-colors disabled:opacity-50"
+              >
+                Continue to Fix
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

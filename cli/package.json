@@ -23,7 +23,8 @@
     "node": ">=20"
   },
   "bin": {
-    "a11y-oop": "./dist/index.js"
+    "a11y-oop": "./dist/index.js",
+    "a11ly-oop": "./dist/index.js"
   },
   "main": "./dist/lib.js",
   "module": "./dist/lib.js",

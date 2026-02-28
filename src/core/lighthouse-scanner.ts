@@ -25,11 +25,61 @@ function findLighthouseBin(): string | null {
   return null
 }
 
-export function runLighthouseAccessibility(url: string): Promise<number | null> {
+interface LighthouseAudit {
+  id: string
+  title: string
+  description?: string
+  score: number | null
+  displayValue?: string
+}
+
+export interface LighthouseAccessibilityResult {
+  score: number | null
+  audits: LighthouseAudit[]
+  report: string | null
+}
+
+function parseLighthouseReport(stdout: string): LighthouseAccessibilityResult {
+  const report = JSON.parse(stdout)
+  const scoreValue = report.categories?.accessibility?.score
+  const score = scoreValue == null ? null : Math.round(scoreValue * 100)
+
+  const auditRefs: Array<{ id: string }> = report.categories?.accessibility?.auditRefs ?? []
+  const audits: LighthouseAudit[] = []
+  for (const ref of auditRefs) {
+    const audit = report.audits?.[ref.id]
+    if (!audit) continue
+
+    const mapped: LighthouseAudit = {
+      id: ref.id,
+      title: String(audit.title ?? ref.id),
+      description: typeof audit.description === 'string' ? audit.description : undefined,
+      score: typeof audit.score === 'number' ? audit.score : null,
+      displayValue: typeof audit.displayValue === 'string' ? audit.displayValue : undefined,
+    }
+    if (mapped.score === 1) continue
+    audits.push(mapped)
+  }
+
+  const compactReport = JSON.stringify({
+    category: 'accessibility',
+    url: report.finalUrl ?? report.requestedUrl ?? '',
+    score,
+    audits,
+  })
+
+  return {
+    score,
+    audits,
+    report: compactReport,
+  }
+}
+
+export function runLighthouseAccessibilityDetailed(url: string): Promise<LighthouseAccessibilityResult> {
   return new Promise((resolvePromise) => {
     const lhBin = findLighthouseBin()
     if (!lhBin) {
-      resolvePromise(null)
+      resolvePromise({ score: null, audits: [], report: null })
       return
     }
 
@@ -52,23 +102,22 @@ export function runLighthouseAccessibility(url: string): Promise<number | null> 
       (error, stdout) => {
         if (error || !stdout) {
           console.error('Lighthouse scan failed:', error?.message)
-          resolvePromise(null)
+          resolvePromise({ score: null, audits: [], report: null })
           return
         }
 
         try {
-          const report = JSON.parse(stdout)
-          const score = report.categories?.accessibility?.score
-          if (score == null) {
-            resolvePromise(null)
-            return
-          }
-          resolvePromise(Math.round(score * 100))
+          resolvePromise(parseLighthouseReport(stdout))
         } catch {
           console.error('Failed to parse Lighthouse output')
-          resolvePromise(null)
+          resolvePromise({ score: null, audits: [], report: null })
         }
       }
     )
   })
+}
+
+export async function runLighthouseAccessibility(url: string): Promise<number | null> {
+  const result = await runLighthouseAccessibilityDetailed(url)
+  return result.score
 }

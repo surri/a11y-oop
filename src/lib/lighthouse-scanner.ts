@@ -1,1 +1,1 @@
-export { runLighthouseAccessibility } from '@/core'
+export { runLighthouseAccessibility, runLighthouseAccessibilityDetailed } from '@/core'

@@ -6,7 +6,10 @@ export async function GET() {
   try {
     const session = await auth()
     if (!session?.accessToken) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      return NextResponse.json(
+        { error: 'GitHub login required to access repository source.' },
+        { status: 401 }
+      )
     }
 
     const octokit = createOctokit(session.accessToken)

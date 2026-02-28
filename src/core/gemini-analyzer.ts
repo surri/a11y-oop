@@ -60,41 +60,48 @@ export interface AnalyzerOptions {
   enableCaching?: boolean
 }
 
-export async function analyzeAccessibility(
-  apiKey: string,
-  screenshot: string,
+export type AccessibilityAnalysisMode = 'runtime+code' | 'code-only'
+
+const WCAG_REFERENCE_URL = 'https://www.w3.org/TR/WCAG/'
+const WCAG_STANDARDS_URL = 'https://www.w3.org/WAI/standards-guidelines/wcag/'
+
+function buildPrompt(
   axeResults: string,
   sourceFiles: Record<string, string>,
   screenshotWidth?: number,
-  options?: AnalyzerOptions
-): Promise<{ issues: A11yIssue[]; score: number; summary: string; groundingMetadata?: unknown }> {
-  if (options?.provider === 'vertex') {
-    if (!options.vertexConfig) {
-      throw new Error('vertexConfig is required when provider is "vertex"')
-    }
-    return analyzeWithVertex(screenshot, axeResults, sourceFiles, {
-      project: options.vertexConfig.project,
-      location: options.vertexConfig.location,
-      enableGrounding: options.enableGrounding ?? true,
-      enableCaching: options.enableCaching ?? true,
-    })
-  }
-
-  const ai = new GoogleGenAI({ apiKey })
-
+  mode: AccessibilityAnalysisMode = 'runtime+code'
+): string {
   const sourceFilesText = Object.entries(sourceFiles)
     .map(([filePath, content]) => `--- File: ${filePath} ---\n${content}`)
     .join('\n\n')
 
   const availableFiles = Object.keys(sourceFiles)
+  const dataContext = mode === 'runtime+code'
+    ? `You are an expert web accessibility auditor. Analyze the provided screenshot and runtime accessibility findings (for example Lighthouse accessibility audits) to identify violations against the latest published WCAG Recommendation.
 
-  const prompt = `You are an expert web accessibility auditor. Analyze the provided screenshot and axe-core scan results to identify WCAG 2.1 violations.
+Cross-reference the runtime findings with the source code files to pinpoint exact locations and provide concrete fixes.`
+    : `You are an expert web accessibility auditor. Analyze the provided source code for likely violations against the latest published WCAG Recommendation.
 
-Cross-reference the axe results with the source code files to pinpoint exact locations and provide concrete fixes.
+No runtime screenshot or runtime accessibility findings are available in this run. Focus on deterministic code-level issues you can confidently map to the provided files.`
 
-Axe-core scan results:
+  const issueGuidance = mode === 'runtime+code'
+    ? `7. If visible in the screenshot, provide the bounding box coordinates in pixels relative to the full screenshot image.${screenshotWidth ? ` The screenshot is ${screenshotWidth}px wide.` : ''} x=0, y=0 is the top-left corner. Coordinates must be in absolute pixels of the original image`
+    : '7. Leave "boundingBox" empty unless there is enough evidence from code context to infer stable coordinates (usually omit it in code-only mode).'
+
+  const runtimeBlock = mode === 'runtime+code'
+    ? `Runtime accessibility findings:
 ${axeResults}
+`
+    : 'Runtime accessibility findings: Not available (code-only mode)\n'
 
+  return `${dataContext}
+
+Normative WCAG reference policy:
+- Treat the latest W3C WCAG Recommendation as the source of truth (currently WCAG 2.2 unless superseded).
+- Prefer official W3C sources for criterion names and intent: ${WCAG_REFERENCE_URL} and ${WCAG_STANDARDS_URL}
+- If web grounding/search is available, verify criterion titles against those W3C sources before finalizing.
+
+${runtimeBlock}
 Source code files:
 ${sourceFilesText}
 
@@ -105,14 +112,15 @@ For each issue found:
 1. Identify the affected React component and file path
 2. Provide the exact current code snippet that is problematic
 3. Provide a corrected code snippet that fixes the issue
-4. Map to the specific WCAG 2.1 success criterion (e.g., "1.1.1 Non-text Content")
+4. Map to the specific WCAG success criterion from the latest published WCAG Recommendation (e.g., "1.1.1 Non-text Content")
 5. Assign severity: critical (WCAG A blocker), serious (WCAG A/AA), moderate (usability impact), minor (best practice)
 6. Estimate the line number in the source file
-7. If visible in the screenshot, provide the bounding box coordinates in pixels relative to the full screenshot image.${screenshotWidth ? ` The screenshot is ${screenshotWidth}px wide.` : ''} x=0, y=0 is the top-left corner. Coordinates must be in absolute pixels of the original image
+${issueGuidance}
 
 CRITICAL RULES:
+- Use official W3C WCAG sources as normative references. Do not rely on third-party summaries when criterion wording conflicts.
 - ONLY reference files listed in AVAILABLE SOURCE FILES above. NEVER invent file paths or component names that do not exist in the provided source code.
-- If an axe-core violation cannot be mapped to any provided source file, SKIP that violation entirely. Do NOT guess or fabricate component names.
+- If a violation cannot be mapped to any provided source file, SKIP that violation entirely. Do NOT guess or fabricate component names.
 - The "component" field must be a component name that actually appears in the provided source code.
 - The "filePath" must exactly match one of the AVAILABLE SOURCE FILES listed above.
 - The currentCode must be an exact substring of the source file (preserve whitespace and indentation exactly).
@@ -131,43 +139,101 @@ Example - CORRECT (full element replacement):
 
 Provide an overall accessibility score from 0-100 (100 = fully accessible) and a brief summary of the findings.
 
-Be thorough but focus on real, actionable issues that can be mapped to the provided source code. If there are violations visible in the screenshot or axe results that cannot be traced to any provided source file, mention them in the summary but do NOT create issue entries for them.`
+Be thorough but focus on real, actionable issues that can be mapped to the provided source code.`
+}
 
-  const response = await ai.models.generateContent({
+function isGroundingToolCompatibilityError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  return (
+    message.includes('googlesearch') ||
+    message.includes('google search') ||
+    message.includes('tool') && message.includes('not support')
+  )
+}
+
+export async function analyzeAccessibility(
+  apiKey: string,
+  screenshot: string,
+  axeResults: string,
+  sourceFiles: Record<string, string>,
+  screenshotWidth?: number,
+  options?: AnalyzerOptions,
+  mode: AccessibilityAnalysisMode = 'runtime+code'
+): Promise<{ issues: A11yIssue[]; score: number; summary: string; groundingMetadata?: unknown }> {
+  if (options?.provider === 'vertex') {
+    if (!options.vertexConfig) {
+      throw new Error('vertexConfig is required when provider is "vertex"')
+    }
+    return analyzeWithVertex(screenshot, axeResults, sourceFiles, {
+      project: options.vertexConfig.project,
+      location: options.vertexConfig.location,
+      enableGrounding: options.enableGrounding ?? true,
+      enableCaching: options.enableCaching ?? true,
+    }, mode)
+  }
+
+  const ai = new GoogleGenAI({ apiKey })
+
+  const availableFiles = Object.keys(sourceFiles)
+  const prompt = buildPrompt(axeResults, sourceFiles, screenshotWidth, mode)
+  const shouldUseGrounding = options?.enableGrounding ?? true
+
+  const parts: Array<
+    { text: string } |
+    { inlineData: { mimeType: 'image/png'; data: string } }
+  > = [{ text: prompt }]
+
+  if (mode === 'runtime+code') {
+    if (!screenshot) {
+      throw new Error('screenshot is required in runtime+code mode')
+    }
+    parts.push({
+      inlineData: {
+        mimeType: 'image/png',
+        data: screenshot,
+      }
+    })
+  }
+
+  const generate = (groundingEnabled: boolean) => ai.models.generateContent({
     model: 'gemini-2.5-flash',
     contents: [
       {
         role: 'user',
-        parts: [
-          { text: prompt },
-          {
-            inlineData: {
-              mimeType: 'image/png',
-              data: screenshot
-            }
-          }
-        ]
+        parts
       }
     ],
     config: {
       responseMimeType: 'application/json',
       responseSchema,
-      temperature: 0.2
+      temperature: 0.2,
+      ...(groundingEnabled ? { tools: [{ googleSearch: {} }] } : {})
     }
   })
+
+  let response
+  try {
+    response = await generate(shouldUseGrounding)
+  } catch (error) {
+    if (!shouldUseGrounding || !isGroundingToolCompatibilityError(error)) {
+      throw error
+    }
+    response = await generate(false)
+  }
 
   const text = response.text
   if (!text) {
     throw new Error('Empty response from Gemini')
   }
   const parsed = JSON.parse(text) as { issues: A11yIssue[]; score: number; summary: string }
+  const groundingMetadata = response.candidates?.[0]?.groundingMetadata
 
   const validatedIssues = parsed.issues.filter((issue) => {
-    if (!availableFiles.includes(issue.filePath)) {
+    if (!issue.filePath || !availableFiles.includes(issue.filePath)) {
       return false
     }
     const fileContent = sourceFiles[issue.filePath]
-    if (fileContent && !fileContent.includes(issue.currentCode)) {
+    if (issue.currentCode && fileContent && !fileContent.includes(issue.currentCode)) {
       return false
     }
     return true
@@ -176,5 +242,6 @@ Be thorough but focus on real, actionable issues that can be mapped to the provi
   return {
     ...parsed,
     issues: validatedIssues,
+    groundingMetadata,
   }
 }

@@ -22,7 +22,8 @@ export async function analyzeAccessibility(
   screenshot: string,
   axeResults: string,
   sourceFiles: Record<string, string>,
-  screenshotWidth?: number
+  screenshotWidth?: number,
+  mode: 'runtime+code' | 'code-only' = 'runtime+code'
 ): Promise<{ issues: A11yIssue[]; score: number; summary: string; groundingMetadata?: unknown }> {
   const options = detectAnalyzerOptions()
   const apiKey = process.env.GEMINI_API_KEY ?? ''
@@ -31,5 +32,5 @@ export async function analyzeAccessibility(
     throw new Error('GEMINI_API_KEY environment variable is not set')
   }
 
-  return coreAnalyze(apiKey, screenshot, axeResults, sourceFiles, screenshotWidth, options)
+  return coreAnalyze(apiKey, screenshot, axeResults, sourceFiles, screenshotWidth, options, mode)
 }

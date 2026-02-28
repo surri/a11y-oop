@@ -1,54 +1,58 @@
 import { NextResponse } from 'next/server'
-import { auth } from '@/lib/auth'
 import { captureScreenshot } from '@/lib/puppeteer'
-import { runAxeScan } from '@/lib/axe-scanner'
-import { readComponentFiles } from '@/lib/code-reader'
-import { readGitHubComponentFiles } from '@/lib/github-code-reader'
-import { analyzeAccessibility } from '@/lib/gemini'
-import { runLighthouseAccessibility } from '@/lib/lighthouse-scanner'
-import type { ScanResult, GitHubRepoConfig, LocalSourceConfig, SourceMode } from '@/shared/types'
+import { runLighthouseAccessibilityDetailed } from '@/lib/lighthouse-scanner'
+import type { A11yIssue, ScanResult } from '@/shared/types'
+
+function toSeverity(score: number | null): A11yIssue['severity'] {
+  if (score === null) return 'moderate'
+  if (score <= 0) return 'serious'
+  if (score < 0.5) return 'moderate'
+  return 'minor'
+}
 
 export async function POST(request: Request) {
   try {
-    const session = await auth()
-    const token = session?.accessToken
-
-    const body = await request.json() as { url: string; sourceMode?: SourceMode; github?: GitHubRepoConfig; local?: LocalSourceConfig }
-    const { url, sourceMode, github, local } = body
-
-    if (!url) {
+    const body = await request.json() as { url?: string }
+    const runtimeUrl = body.url?.trim()
+    if (!runtimeUrl) {
       return NextResponse.json({ error: 'url is required' }, { status: 400 })
     }
 
-    const sourceFilesPromise =
-      sourceMode === 'github' && github
-        ? readGitHubComponentFiles(github, token)
-        : readComponentFiles(local?.srcPath)
-
-    const [screenshot, axeViolations, sourceFiles, lighthouseScore] = await Promise.all([
-      captureScreenshot(url),
-      runAxeScan(url),
-      sourceFilesPromise,
-      runLighthouseAccessibility(url),
+    const [screenshot, lighthouse] = await Promise.all([
+      captureScreenshot(runtimeUrl),
+      runLighthouseAccessibilityDetailed(runtimeUrl),
     ])
 
-    const analysisResult = await analyzeAccessibility(
-      screenshot,
-      JSON.stringify(axeViolations, null, 2),
-      sourceFiles,
-      1280
-    )
-    const { issues, score, summary } = analysisResult
+    const issues: A11yIssue[] = lighthouse.audits.map((audit, idx) => ({
+      id: `${audit.id}-${idx}`,
+      component: audit.id,
+      filePath: undefined,
+      severity: toSeverity(audit.score),
+      wcagCriteria: audit.id,
+      description: `${audit.title}${audit.description ? ` - ${audit.description}` : ''}`,
+      currentCode: audit.displayValue,
+      fixedCode: undefined,
+      line: undefined,
+      sourceReady: false,
+    }))
+
+    const score = lighthouse.score ?? Math.max(0, 100 - issues.length * 7)
+    const summary = issues.length === 0
+      ? 'Lighthouse did not report accessibility findings.'
+      : `Lighthouse reported ${issues.length} accessibility finding${issues.length !== 1 ? 's' : ''}.`
 
     const result: ScanResult = {
-      url,
+      url: runtimeUrl,
+      mode: 'runtime-dom',
       timestamp: new Date().toISOString(),
       screenshot,
       score,
-      lighthouseScore,
+      lighthouseScore: lighthouse.score,
       summary,
       issues,
-      axeViolationCount: axeViolations.length
+      axeViolationCount: issues.length,
+      lighthouseFindings: lighthouse.audits,
+      lighthouseReport: lighthouse.report,
     }
 
     return NextResponse.json(result)

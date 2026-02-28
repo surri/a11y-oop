@@ -24,6 +24,7 @@ const severityChip: Record<string, string> = {
 
 export default function IssueCard({ issue }: IssueCardProps) {
   const [expanded, setExpanded] = useState(false)
+  const hasCodeDiff = Boolean(issue.currentCode && issue.fixedCode)
 
   return (
     <div
@@ -37,11 +38,13 @@ export default function IssueCard({ issue }: IssueCardProps) {
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <span className={`text-xs font-mono px-2 py-0.5 rounded-full ${severityChip[issue.severity]}`}>
-              {issue.component}
+              {issue.component || issue.selector || 'Runtime Finding'}
             </span>
-            <span className="text-xs bg-gray-800 text-gray-400 border border-gray-700 px-2 py-0.5 rounded-full font-mono">
-              {issue.wcagCriteria}
-            </span>
+            {issue.wcagCriteria && (
+              <span className="text-xs bg-gray-800 text-gray-400 border border-gray-700 px-2 py-0.5 rounded-full font-mono">
+                {issue.wcagCriteria}
+              </span>
+            )}
           </div>
           <p className="text-sm text-gray-300 leading-snug">{issue.description}</p>
         </div>
@@ -58,7 +61,20 @@ export default function IssueCard({ issue }: IssueCardProps) {
 
       {expanded && (
         <div className="px-4 pb-4 border-t border-gray-800 pt-3">
-          <CodeDiff currentCode={issue.currentCode} fixedCode={issue.fixedCode} />
+          {hasCodeDiff ? (
+            <CodeDiff currentCode={issue.currentCode!} fixedCode={issue.fixedCode!} />
+          ) : (
+            <div className="text-xs text-gray-400 leading-relaxed">
+              <p className="mb-2">
+                Source mapping is not generated yet. Select repository/local source at fix time to generate concrete code changes.
+              </p>
+              {issue.currentCode && (
+                <pre className="bg-gray-950 border border-gray-800 rounded-lg p-3 text-gray-300 whitespace-pre-wrap overflow-auto">
+                  {issue.currentCode}
+                </pre>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

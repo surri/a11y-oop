@@ -1,11 +1,7 @@
 import { NextResponse } from 'next/server'
-import type { RescanResult, GitHubRepoConfig, LocalSourceConfig, SourceMode } from '@/shared/types'
+import type { RescanResult } from '@/shared/types'
 import { captureScreenshot } from '@/lib/puppeteer'
-import { runAxeScan } from '@/lib/axe-scanner'
-import { readComponentFiles } from '@/lib/code-reader'
-import { readGitHubComponentFiles } from '@/lib/github-code-reader'
-import { analyzeAccessibility } from '@/lib/gemini'
-import { runLighthouseAccessibility } from '@/lib/lighthouse-scanner'
+import { runLighthouseAccessibilityDetailed } from '@/lib/lighthouse-scanner'
 
 export async function POST(request: Request) {
   try {
@@ -16,29 +12,19 @@ export async function POST(request: Request) {
       beforeScore: number
       beforeLighthouseScore: number | null
     }
-    const sourceMode: SourceMode | undefined = body.sourceMode
-    const github: GitHubRepoConfig | undefined = body.github
-    const local: LocalSourceConfig | undefined = body.local
-
     const beforeIssueCount = body.beforeIssueCount as number ?? 0
 
-    const sourceFilesPromise =
-      sourceMode === 'github' && github
-        ? readGitHubComponentFiles(github)
-        : readComponentFiles(local?.srcPath)
+    if (!url) {
+      return NextResponse.json({ error: 'url is required' }, { status: 400 })
+    }
 
-    const [newScreenshot, axeResults, componentFiles, lighthouseScore] = await Promise.all([
+    const [newScreenshot, lighthouse] = await Promise.all([
       captureScreenshot(url),
-      runAxeScan(url),
-      sourceFilesPromise,
-      runLighthouseAccessibility(url),
+      runLighthouseAccessibilityDetailed(url),
     ])
-    const newResult = await analyzeAccessibility(
-      newScreenshot,
-      JSON.stringify(axeResults, null, 2),
-      componentFiles,
-      1280
-    )
+
+    const afterScore = lighthouse.score ?? beforeScore
+    const afterIssueCount = lighthouse.audits.length
 
     const rescanResult: RescanResult = {
       before: {
@@ -48,11 +34,11 @@ export async function POST(request: Request) {
       },
       after: {
         screenshot: newScreenshot,
-        score: newResult.score,
-        lighthouseScore: lighthouseScore,
+        score: afterScore,
+        lighthouseScore: lighthouse.score,
       },
-      issuesFixed: beforeIssueCount - newResult.issues.length,
-      issuesRemaining: newResult.issues.length,
+      issuesFixed: Math.max(0, beforeIssueCount - afterIssueCount),
+      issuesRemaining: afterIssueCount,
     }
 
     return NextResponse.json(rescanResult)

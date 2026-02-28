@@ -25,11 +25,12 @@ export function formatScanResult(result: ScanResult): string {
   lines.push(chalk.dim(`Timestamp: ${result.timestamp}`))
   lines.push('')
 
-  const lhPart = result.lighthouseScore !== null
-    ? `  Lighthouse: ${scoreColor(result.lighthouseScore)}/100`
-    : ''
-  lines.push(`  Gemini Score: ${scoreColor(result.score)}/100${lhPart}`)
-  lines.push(`  Axe violations: ${chalk.bold(result.axeViolationCount.toString())}`)
+  if (result.lighthouseScore !== null) {
+    lines.push(`  Lighthouse Score: ${scoreColor(result.score)}/100`)
+  } else {
+    lines.push(`  Score (AI fallback): ${scoreColor(result.score)}/100`)
+  }
+  lines.push(`  Lighthouse findings: ${chalk.bold(result.axeViolationCount.toString())}`)
   lines.push(`  Issues found: ${chalk.bold(result.issues.length.toString())}`)
   lines.push('')
 
@@ -75,7 +76,7 @@ export function formatIssues(issues: A11yIssue[]): string {
       '  ' +
       col(issue.component, 24) + '  ' +
       col(severityColor(issue.severity), 10 + 10) + '  ' +
-      col(issue.wcagCriteria, 12) + '  ' +
+      col(issue.wcagCriteria ?? '-', 12) + '  ' +
       issue.description.slice(0, 60)
     lines.push(row)
   }

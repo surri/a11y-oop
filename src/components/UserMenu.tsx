@@ -27,7 +27,7 @@ export default function UserMenu() {
       </div>
       <button
         type="button"
-        onClick={() => signOut({ callbackUrl: '/login' })}
+        onClick={() => signOut({ callbackUrl: '/' })}
         className="text-xs text-gray-500 hover:text-gray-300 transition-colors border border-gray-700 hover:border-gray-600 rounded-lg px-2.5 py-1"
       >
         Sign out

@@ -27,39 +27,63 @@ export default function SourceModeSelector({
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Mode toggle */}
-      <div className="flex items-center gap-1 bg-gray-800 rounded-lg p-1 w-fit">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => onSourceModeChange('local')}
-          className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-150 disabled:opacity-50 ${
-            sourceMode === 'local'
-              ? 'bg-violet-600 text-white shadow'
-              : 'text-gray-400 hover:text-gray-200'
-          }`}
-        >
-          Local
-        </button>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => onSourceModeChange('github')}
-          className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all duration-150 disabled:opacity-50 ${
-            sourceMode === 'github'
-              ? 'bg-violet-600 text-white shadow'
-              : 'text-gray-400 hover:text-gray-200'
-          }`}
-        >
-          GitHub
-        </button>
-      </div>
+      {sourceMode === 'github' && session && (
+        <>
+          <RepoPicker
+            githubConfig={githubConfig}
+            onGitHubConfigChange={onGitHubConfigChange}
+            disabled={disabled}
+          />
+          <button
+            type="button"
+            onClick={() => onSourceModeChange('local')}
+            disabled={disabled}
+            className="w-fit text-xs text-gray-500 hover:text-gray-300 transition-colors border border-gray-700 hover:border-gray-600 rounded-lg px-2.5 py-1 disabled:opacity-50"
+          >
+            Use local source (advanced)
+          </button>
+        </>
+      )}
 
-      {/* Local source path input */}
+      {sourceMode === 'github' && !session && (
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-amber-300 bg-amber-950/40 border border-amber-900/50 rounded-lg px-3 py-2">
+            GitHub login is required only when accessing repository source.
+          </p>
+          <div className="flex items-center gap-2">
+            <a
+              href="/login"
+              className={`text-xs text-gray-200 border border-gray-700 hover:border-gray-500 rounded-lg px-2.5 py-1 transition-colors ${disabled ? 'pointer-events-none opacity-50' : ''}`}
+            >
+              Sign in with GitHub
+            </a>
+            <button
+              type="button"
+              onClick={() => onSourceModeChange('local')}
+              disabled={disabled}
+              className="text-xs text-gray-500 hover:text-gray-300 transition-colors border border-gray-700 hover:border-gray-600 rounded-lg px-2.5 py-1 disabled:opacity-50"
+            >
+              Use local source instead
+            </button>
+          </div>
+        </div>
+      )}
+
       {sourceMode === 'local' && (
         <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-400 font-medium">Source Path</span>
+            <button
+              type="button"
+              onClick={() => onSourceModeChange('github')}
+              disabled={disabled}
+              className="text-[11px] text-gray-500 hover:text-gray-300 transition-colors disabled:opacity-50"
+            >
+              Back to GitHub mode
+            </button>
+          </div>
           <label htmlFor="local-src-path" className="text-xs text-gray-400 font-medium">
-            Source Path
+            Local project directory
           </label>
           <input
             id="local-src-path"
@@ -71,15 +95,6 @@ export default function SourceModeSelector({
             className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:opacity-50 transition font-mono"
           />
         </div>
-      )}
-
-      {/* GitHub repo picker (when authenticated) */}
-      {sourceMode === 'github' && session && (
-        <RepoPicker
-          githubConfig={githubConfig}
-          onGitHubConfigChange={onGitHubConfigChange}
-          disabled={disabled}
-        />
       )}
     </div>
   )

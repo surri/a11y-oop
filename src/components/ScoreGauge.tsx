@@ -46,6 +46,8 @@ export default function ScoreGauge({ score, lighthouseScore }: ScoreGaugeProps) 
   const color = getColor(score)
   const size = (radius + strokeWidth) * 2
   const lhColor = lighthouseScore != null ? getColor(lighthouseScore) : '#6b7280'
+  const showLighthouseBadge = lighthouseScore != null && lighthouseScore !== score
+  const primaryLabel = lighthouseScore != null ? 'Lighthouse Score' : 'Score'
 
   return (
     <div className="flex flex-col items-center gap-2">
@@ -101,7 +103,7 @@ export default function ScoreGauge({ score, lighthouseScore }: ScoreGaugeProps) 
         </svg>
 
         {/* Lighthouse badge */}
-        {lighthouseScore != null && (
+        {showLighthouseBadge && (
           <div
             className="absolute -right-2 -bottom-1 flex items-center gap-1 rounded-full border border-gray-700 bg-gray-900 px-2 py-0.5 shadow-lg"
             title="Lighthouse Accessibility Score"
@@ -114,7 +116,7 @@ export default function ScoreGauge({ score, lighthouseScore }: ScoreGaugeProps) 
           </div>
         )}
       </div>
-      <span className="text-sm text-gray-400 font-medium">AI Score</span>
+      <span className="text-sm text-gray-400 font-medium">{primaryLabel}</span>
     </div>
   )
 }

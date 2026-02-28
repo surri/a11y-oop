@@ -8,12 +8,11 @@ interface ScanProgressProps {
 
 const steps: { key: ScanStep; label: string }[] = [
   { key: 'capturing', label: 'Taking Screenshot' },
-  { key: 'scanning', label: 'Running axe-core' },
-  { key: 'reading', label: 'Reading Source Code' },
-  { key: 'analyzing', label: 'AI Analysis' },
+  { key: 'scanning', label: 'Running Lighthouse' },
+  { key: 'analyzing', label: 'Summarizing Findings' },
 ]
 
-const stepOrder: ScanStep[] = ['capturing', 'scanning', 'reading', 'analyzing', 'complete']
+const stepOrder: ScanStep[] = ['capturing', 'scanning', 'analyzing', 'complete']
 
 function getStepStatus(stepKey: ScanStep, currentStep: ScanStep): 'completed' | 'current' | 'pending' {
   const stepIdx = stepOrder.indexOf(stepKey)

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import type { GitHubRepoConfig } from '@/shared/types'
+import type { GitHubRepoConfig, GitHubResolvedConfig } from '@/shared/types'
 
 interface Repo {
   full_name: string
@@ -18,6 +18,22 @@ interface RepoPickerProps {
   disabled?: boolean
 }
 
+async function resolveGitHubConfig(payload: GitHubRepoConfig): Promise<GitHubResolvedConfig> {
+  const response = await fetch('/api/github/resolve-config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    const detail = data?.error ?? response.statusText
+    throw new Error(detail)
+  }
+
+  return response.json() as Promise<GitHubResolvedConfig>
+}
+
 export default function RepoPicker({
   githubConfig,
   onGitHubConfigChange,
@@ -28,6 +44,8 @@ export default function RepoPicker({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showManualInput, setShowManualInput] = useState(false)
+  const [resolving, setResolving] = useState(false)
+  const [resolveError, setResolveError] = useState('')
 
   const selectedRepo = githubConfig.owner && githubConfig.repo
     ? `${githubConfig.owner}/${githubConfig.repo}`
@@ -42,7 +60,7 @@ export default function RepoPicker({
       const data: Repo[] = await res.json()
       setRepos(data)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load repos')
+      setError(err instanceof Error ? err.message : 'Failed to load repositories')
     } finally {
       setLoading(false)
     }
@@ -56,21 +74,47 @@ export default function RepoPicker({
     r.full_name.toLowerCase().includes(search.toLowerCase())
   )
 
-  const handleSelect = (repo: Repo) => {
+  const applyResolvedConfig = (resolved: GitHubResolvedConfig) => {
     onGitHubConfigChange({
-      ...githubConfig,
+      owner: resolved.owner,
+      repo: resolved.repo,
+      branch: resolved.branch,
+      srcPath: resolved.srcPath,
+      filePattern: resolved.filePattern,
+    })
+  }
+
+  const selectRepo = async (payload: GitHubRepoConfig) => {
+    setResolving(true)
+    setResolveError('')
+    try {
+      const resolved = await resolveGitHubConfig(payload)
+      applyResolvedConfig(resolved)
+    } catch (err) {
+      setResolveError(err instanceof Error ? err.message : 'Failed to resolve repository configuration')
+    } finally {
+      setResolving(false)
+    }
+  }
+
+  const handleSelect = async (repo: Repo) => {
+    await selectRepo({
       owner: repo.owner,
       repo: repo.name,
       branch: repo.default_branch,
+      srcPath: undefined,
+      filePattern: undefined,
     })
   }
 
   const handleClear = () => {
+    setResolveError('')
     onGitHubConfigChange({
-      ...githubConfig,
       owner: '',
       repo: '',
-      branch: 'main',
+      branch: undefined,
+      srcPath: undefined,
+      filePattern: undefined,
     })
   }
 
@@ -85,36 +129,34 @@ export default function RepoPicker({
           <button
             type="button"
             onClick={handleClear}
-            disabled={disabled}
-            className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            disabled={disabled || resolving}
+            className="text-xs text-gray-500 hover:text-gray-300 transition-colors disabled:opacity-50"
           >
             Change
           </button>
         </div>
-        <div className="flex gap-3">
-          <div className="flex-1">
-            <label className="block text-xs text-gray-500 mb-1">Branch</label>
-            <input
-              type="text"
-              value={githubConfig.branch}
-              onChange={(e) => onGitHubConfigChange({ ...githubConfig, branch: e.target.value })}
-              placeholder="main"
-              disabled={disabled}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:opacity-50 transition text-sm"
-            />
+
+        <div className="rounded-lg border border-gray-800 bg-gray-900/40 px-3 py-2.5 text-xs text-gray-400 flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500">Branch</span>
+            <code className="text-gray-200">{githubConfig.branch ?? 'auto'}</code>
           </div>
-          <div className="flex-1">
-            <label className="block text-xs text-gray-500 mb-1">Source path</label>
-            <input
-              type="text"
-              value={githubConfig.srcPath}
-              onChange={(e) => onGitHubConfigChange({ ...githubConfig, srcPath: e.target.value })}
-              placeholder="src"
-              disabled={disabled}
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:opacity-50 transition text-sm"
-            />
+          <div className="flex items-center gap-2">
+            <span className="text-gray-500">Source</span>
+            <code className="text-gray-200">{githubConfig.srcPath ?? '(repository root fallback)'}</code>
           </div>
         </div>
+
+        {resolving && (
+          <div className="flex items-center gap-2 text-xs text-gray-400">
+            <div className="w-3.5 h-3.5 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
+            Resolving repository defaults...
+          </div>
+        )}
+
+        {resolveError && (
+          <p className="text-xs text-red-400">{resolveError}</p>
+        )}
       </div>
     )
   }
@@ -136,7 +178,7 @@ export default function RepoPicker({
         <ManualRepoInput
           githubConfig={githubConfig}
           onGitHubConfigChange={onGitHubConfigChange}
-          disabled={disabled}
+          disabled={disabled || resolving}
         />
       ) : (
         <>
@@ -145,7 +187,7 @@ export default function RepoPicker({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search repositories..."
-            disabled={disabled}
+            disabled={disabled || resolving}
             className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:border-transparent disabled:opacity-50 transition text-sm"
           />
 
@@ -170,7 +212,7 @@ export default function RepoPicker({
                     key={repo.full_name}
                     type="button"
                     onClick={() => handleSelect(repo)}
-                    disabled={disabled}
+                    disabled={disabled || resolving}
                     className="w-full text-left px-4 py-2.5 hover:bg-gray-800/60 transition-colors disabled:opacity-50 flex items-center gap-2"
                   >
                     <svg className="w-4 h-4 text-gray-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -189,6 +231,17 @@ export default function RepoPicker({
                 ))
               )}
             </div>
+          )}
+
+          {resolving && (
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <div className="w-3.5 h-3.5 border-2 border-violet-500 border-t-transparent rounded-full animate-spin" />
+              Resolving repository defaults...
+            </div>
+          )}
+
+          {resolveError && (
+            <p className="text-xs text-red-400">{resolveError}</p>
           )}
         </>
       )}
@@ -229,31 +282,31 @@ function ManualRepoInput({
       setValidationMessage('Enter a valid GitHub URL (e.g. https://github.com/owner/repo)')
       return
     }
+
     setValidating(true)
     setValidationState('idle')
     try {
-      const res = await fetch('/api/github/validate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ owner: parsed.owner, repo: parsed.repo }),
+      const resolved = await resolveGitHubConfig({
+        owner: parsed.owner,
+        repo: parsed.repo,
+        branch: undefined,
+        srcPath: undefined,
+        filePattern: undefined,
       })
-      const data = await res.json() as { valid: boolean; defaultBranch: string }
-      if (data.valid) {
-        setValidationState('valid')
-        setValidationMessage(`Repository found. Default branch: ${data.defaultBranch}`)
-        onGitHubConfigChange({
-          ...githubConfig,
-          owner: parsed.owner,
-          repo: parsed.repo,
-          branch: data.defaultBranch,
-        })
-      } else {
-        setValidationState('invalid')
-        setValidationMessage('Repository not found or not accessible.')
-      }
+      onGitHubConfigChange({
+        owner: resolved.owner,
+        repo: resolved.repo,
+        branch: resolved.branch,
+        srcPath: resolved.srcPath,
+        filePattern: resolved.filePattern,
+      })
+      setValidationState('valid')
+      setValidationMessage(
+        `Repository ready. Branch: ${resolved.branch}, source: ${resolved.srcPath ?? 'repository root fallback'}`
+      )
     } catch {
       setValidationState('invalid')
-      setValidationMessage('Validation failed.')
+      setValidationMessage('Repository not found or not accessible.')
     } finally {
       setValidating(false)
     }
